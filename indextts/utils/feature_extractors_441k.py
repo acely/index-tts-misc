@@ -21,7 +21,7 @@ class FeatureExtractor(nn.Module):
         raise NotImplementedError("Subclasses must implement the forward method.")
 
 
-class MelSpectrogramFeatures(FeatureExtractor):
+class MelSpectrogramFeatures44k(FeatureExtractor):
     def __init__(self, sample_rate=441000, n_fft=2048, hop_length=512, win_length=2048,
                  n_mels=128, mel_fmin=0, mel_fmax=None, normalize=False, padding="center"):
         super().__init__()
