@@ -86,3 +86,24 @@ dist_config:
     dist_backend: nccl
     dist_url: tcp://localhost:54321
     world_size: 1
+# indextts
+feat_upsample: false
+# indextts
+speaker_embedding_dim: 512
+# indextts
+cond_d_vector_in_each_upsampling_layer: true
+# indextts
+gpt_dim: 1280
+# indextts
+resolutions:
+-   - 1024
+    - 120
+    - 600
+-   - 2048
+    - 240
+    - 1200
+-   - 512
+    - 50
+    - 240
+# indextts
+mel_type: pytorch
