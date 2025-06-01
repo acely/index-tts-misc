@@ -54,6 +54,8 @@ class IndexTTS:
             print(">> Be patient, it may take a while to run in CPU mode.")
 
         self.cfg = OmegaConf.load(cfg_path)
+        bigvgan_specific_cfg_path = "checkpoints/bigvgan44.yaml"
+        self.bigvgan_cfg_override = OmegaConf.load(bigvgan_specific_cfg_path)
         self.model_dir = model_dir
         self.dtype = torch.float16 if self.is_fp16 else None
         self.stop_mel_token = self.cfg.gpt.stop_mel_token
@@ -107,7 +109,7 @@ class IndexTTS:
                     "See more details: https://github.com/index-tts/index-tts/issues/164#issuecomment-2903453206", file=sys.stderr
                 )
                 self.use_cuda_kernel = False
-        self.bigvgan = Generator(self.cfg.bigvgan, use_cuda_kernel=self.use_cuda_kernel)
+        self.bigvgan = Generator(self.bigvgan_cfg_override, use_cuda_kernel=self.use_cuda_kernel)
         self.bigvgan_path = os.path.join(self.model_dir, self.cfg.bigvgan_checkpoint)
         vocoder_dict = torch.load(self.bigvgan_path, map_location="cpu")
         self.bigvgan.load_state_dict(vocoder_dict["generator"])
