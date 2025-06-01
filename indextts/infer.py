@@ -333,6 +333,7 @@ class IndexTTS:
                     pass
 
         auto_conditioning = cond_mel
+        auto_conditioning_44k = cond_mel_44k
         cond_mel_lengths = torch.tensor([cond_mel_frame], device=self.device)
 
         # text_tokens
@@ -562,6 +563,7 @@ class IndexTTS:
 
         self._set_gr_progress(0.1, "text processing...")
         auto_conditioning = cond_mel
+        auto_conditioning_44k = cond_mel_44k
         text_tokens_list = self.tokenizer.tokenize(text)
         sentences = self.tokenizer.split_sentences(text_tokens_list, max_text_tokens_per_sentence)
         if verbose:
