@@ -19,6 +19,7 @@ from indextts.BigVGAN.models import BigVGAN as Generator
 from indextts.gpt.model import UnifiedVoice
 from indextts.utils.checkpoint import load_checkpoint
 from indextts.utils.feature_extractors import MelSpectrogramFeatures
+from indextts.utils.feature_extractors_441k import MelSpectrogramFeatures44k
 
 from indextts.utils.front import TextNormalizer, TextTokenizer
 
@@ -123,10 +124,12 @@ class IndexTTS:
         self.normalizer.load()
         print(">> TextNormalizer loaded")
         self.tokenizer = TextTokenizer(self.bpe_path, self.normalizer)
+        self.mel_extractor_44k = MelSpectrogramFeatures44k()
         print(">> bpe model loaded from:", self.bpe_path)
         # 缓存参考音频mel：
         self.cache_audio_prompt = None
         self.cache_cond_mel = None
+        self.cache_cond_mel_44k = None
         # 进度引用显示（可选）
         self.gr_progress = None
         self.model_version = self.cfg.version if hasattr(self.cfg, "version") else None
@@ -295,23 +298,39 @@ class IndexTTS:
         start_time = time.perf_counter()
 
         # 如果参考音频改变了，才需要重新生成 cond_mel, 提升速度
-        if self.cache_cond_mel is None or self.cache_audio_prompt != audio_prompt:
-            audio, sr = torchaudio.load(audio_prompt)
-            audio = torch.mean(audio, dim=0, keepdim=True)
-            if audio.shape[0] > 1:
-                audio = audio[0].unsqueeze(0)
-            audio = torchaudio.transforms.Resample(sr, 24000)(audio)
-            cond_mel = MelSpectrogramFeatures()(audio).to(self.device)
-            cond_mel_frame = cond_mel.shape[-1]
-            if verbose:
-                print(f"cond_mel shape: {cond_mel.shape}", "dtype:", cond_mel.dtype)
+                    original_audio, original_sr = torchaudio.load(audio_prompt)
+                    # Process for 24kHz cond_mel
+                    audio_24k = torch.mean(original_audio, dim=0, keepdim=True)
+                    if audio_24k.shape[0] > 1:
+                        audio_24k = audio_24k[0].unsqueeze(0)
+                    if original_sr != 24000:
+                        audio_24k = torchaudio.transforms.Resample(original_sr, 24000)(audio_24k)
+                    # Assuming MelSpectrogramFeatures is available in the scope of infer.py for 24k
+                    # This was the original import: from indextts.utils.feature_extractors import MelSpectrogramFeatures
+                    self.cache_cond_mel = MelSpectrogramFeatures()(audio_24k).to(self.device)
 
-            self.cache_audio_prompt = audio_prompt
-            self.cache_cond_mel = cond_mel
-        else:
-            cond_mel = self.cache_cond_mel
-            cond_mel_frame = cond_mel.shape[-1]
-            pass
+                    # Process for 44.1kHz cond_mel_44k
+                    audio_44k = torch.mean(original_audio, dim=0, keepdim=True)
+                    if audio_44k.shape[0] > 1:
+                        audio_44k = audio_44k[0].unsqueeze(0)
+                    if original_sr != 44100: # Only resample if not already 44.1kHz
+                        audio_44k = torchaudio.transforms.Resample(original_sr, 44100)(audio_44k)
+                    self.cache_cond_mel_44k = self.mel_extractor_44k(audio_44k).to(self.device)
+
+                    cond_mel_frame = self.cache_cond_mel.shape[-1] # Keep this for existing logic that uses it
+                    if verbose:
+                        print(f"cond_mel (24kHz) shape: {self.cache_cond_mel.shape}", "dtype:", self.cache_cond_mel.dtype)
+                        print(f"cond_mel_44k (44.1kHz) shape: {self.cache_cond_mel_44k.shape}", "dtype:", self.cache_cond_mel_44k.dtype)
+
+                    self.cache_audio_prompt = audio_prompt
+                    # cond_mel and cond_mel_44k are now set in cache
+                    cond_mel = self.cache_cond_mel
+                    cond_mel_44k = self.cache_cond_mel_44k # Ensure this is assigned
+                else:
+                    cond_mel = self.cache_cond_mel
+                    cond_mel_44k = self.cache_cond_mel_44k # Load 44k from cache
+                    cond_mel_frame = cond_mel.shape[-1]
+                    pass
 
         auto_conditioning = cond_mel
         cond_mel_lengths = torch.tensor([cond_mel_frame], device=self.device)
@@ -507,23 +526,39 @@ class IndexTTS:
         start_time = time.perf_counter()
 
         # 如果参考音频改变了，才需要重新生成 cond_mel, 提升速度
-        if self.cache_cond_mel is None or self.cache_audio_prompt != audio_prompt:
-            audio, sr = torchaudio.load(audio_prompt)
-            audio = torch.mean(audio, dim=0, keepdim=True)
-            if audio.shape[0] > 1:
-                audio = audio[0].unsqueeze(0)
-            audio = torchaudio.transforms.Resample(sr, 24000)(audio)
-            cond_mel = MelSpectrogramFeatures()(audio).to(self.device)
-            cond_mel_frame = cond_mel.shape[-1]
-            if verbose:
-                print(f"cond_mel shape: {cond_mel.shape}", "dtype:", cond_mel.dtype)
+                    original_audio, original_sr = torchaudio.load(audio_prompt)
+                    # Process for 24kHz cond_mel
+                    audio_24k = torch.mean(original_audio, dim=0, keepdim=True)
+                    if audio_24k.shape[0] > 1:
+                        audio_24k = audio_24k[0].unsqueeze(0)
+                    if original_sr != 24000:
+                        audio_24k = torchaudio.transforms.Resample(original_sr, 24000)(audio_24k)
+                    # Assuming MelSpectrogramFeatures is available in the scope of infer.py for 24k
+                    # This was the original import: from indextts.utils.feature_extractors import MelSpectrogramFeatures
+                    self.cache_cond_mel = MelSpectrogramFeatures()(audio_24k).to(self.device)
 
-            self.cache_audio_prompt = audio_prompt
-            self.cache_cond_mel = cond_mel
-        else:
-            cond_mel = self.cache_cond_mel
-            cond_mel_frame = cond_mel.shape[-1]
-            pass
+                    # Process for 44.1kHz cond_mel_44k
+                    audio_44k = torch.mean(original_audio, dim=0, keepdim=True)
+                    if audio_44k.shape[0] > 1:
+                        audio_44k = audio_44k[0].unsqueeze(0)
+                    if original_sr != 44100: # Only resample if not already 44.1kHz
+                        audio_44k = torchaudio.transforms.Resample(original_sr, 44100)(audio_44k)
+                    self.cache_cond_mel_44k = self.mel_extractor_44k(audio_44k).to(self.device)
+
+                    cond_mel_frame = self.cache_cond_mel.shape[-1] # Keep this for existing logic that uses it
+                    if verbose:
+                        print(f"cond_mel (24kHz) shape: {self.cache_cond_mel.shape}", "dtype:", self.cache_cond_mel.dtype)
+                        print(f"cond_mel_44k (44.1kHz) shape: {self.cache_cond_mel_44k.shape}", "dtype:", self.cache_cond_mel_44k.dtype)
+
+                    self.cache_audio_prompt = audio_prompt
+                    # cond_mel and cond_mel_44k are now set in cache
+                    cond_mel = self.cache_cond_mel
+                    cond_mel_44k = self.cache_cond_mel_44k # Ensure this is assigned
+                else:
+                    cond_mel = self.cache_cond_mel
+                    cond_mel_44k = self.cache_cond_mel_44k # Load 44k from cache
+                    cond_mel_frame = cond_mel.shape[-1]
+                    pass
 
         self._set_gr_progress(0.1, "text processing...")
         auto_conditioning = cond_mel
