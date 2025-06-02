@@ -6,13 +6,16 @@ BigVGAN 24kHz -> 44kHz 蒸馏训练脚本
 """
 
 import os
+from attrdict import AttrDict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import DataLoader
+from omegaconf import OmegaConf
 
-from indextts.distill_utils import Generator44kHzWithSpeaker, AudioMelDataset
+from distill_utils import Generator44kHzWithSpeaker, AudioMelDataset
+from indextts.BigVGAN.models import BigVGAN as Generator
 from indextts.BigVGAN.models import MultiPeriodDiscriminator, MultiResolutionDiscriminator
 from indextts.BigVGAN.models import discriminator_loss as bigvgan_discriminator_loss
 from indextts.BigVGAN.models import feature_loss as bigvgan_feature_loss
@@ -24,14 +27,6 @@ import logging
 # Configure standard logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[logging.StreamHandler()])
 logger = logging # Alias for convenience
-
-# Helper HParams Class
-class HParams:
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-    def get(self, key, default=None):
-        return getattr(self, key, default)
 
 # BigVGAN Discriminator Wrapper
 class BigVGANDiscriminatorWrapper(nn.Module):
@@ -54,7 +49,7 @@ class BigVGANDiscriminatorWrapper(nn.Module):
 # --- Configuration ---
 config = {
     # Training Hyperparameters
-    "epochs": 3000,
+    "epochs": 100,
     "batch_size": 16,
     "lr_g": 2e-4, # Learning rate for generator
     "lr_d": 2e-4, # Learning rate for discriminator
@@ -64,10 +59,10 @@ config = {
     "speaker_embed_dim": 512,
 
     # Model Checkpoint Paths
-    "teacher_ckpt": "path/to/your/pretrained_24khz_teacher.pth",
-    "student_ckpt": "checkpoints_distill_bigvgan_loop_refactor/student_bigvgan.pth",
-    "discriminator_ckpt": "checkpoints_distill_bigvgan_loop_refactor/discriminator_bigvgan.pth",
-    "out_dir": "checkpoints_distill_bigvgan_loop_refactor",
+    "teacher_ckpt": "checkpoints/bigvgan_generator.pth",
+    "student_ckpt": "checkpoints/bigvgan_generator-44k.pth",
+    "discriminator_ckpt": "checkpoints/bigvgan_discriminator-44k.pth",
+    "out_dir": "checkpoints_distill",
 
     # Student Model & Data Parameters (44.1kHz)
     "sampling_rate": 44100,
@@ -123,17 +118,60 @@ torch.backends.cudnn.benchmark = True
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger.info(f"Using device: {device}")
 
+def remove_prefix_from_state_dict(state_dict, prefix):
+    """
+    去除 state_dict 中所有以指定 prefix 开头的 key 的前缀。
+    
+    Args:
+        state_dict (dict): 原始的模型权重字典。
+        prefix (str): 要去掉的前缀，例如 "bigvgan."
+        
+    Returns:
+        dict: 新的 state_dict，key 已去除前缀。
+    """
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith(prefix):
+            new_key = key[len(prefix):]
+        else:
+            new_key = key
+        new_state_dict[new_key] = value
+    return new_state_dict
+def add_prefix_to_state_dict(state_dict, prefix):
+    """
+    给 state_dict 中的所有 key 添加指定的前缀。
+    
+    Args:
+        state_dict (dict): 原始的模型权重字典。
+        prefix (str): 要添加的前缀，例如 "bigvgan."
+        
+    Returns:
+        dict: 新的 state_dict，每个 key 都加上了前缀。
+    """
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        new_key = prefix + key  # 添加前缀
+        new_state_dict[new_key] = value
+    return new_state_dict
 # ==== 1. Models ====
 # Teacher Model
 teacher = None
-if config["teacher_ckpt"] and os.path.exists(config["teacher_ckpt"]) and \
-   config["teacher_ckpt"] != "path/to/your/pretrained_24khz_teacher.pth":
+if config["teacher_ckpt"] and os.path.exists(config["teacher_ckpt"]):
     try:
         # USER: Implement actual teacher model loading here
-        logger.info(f"Attempting to load Teacher model from {config['teacher_ckpt']}...")
-        # Example: teacher = load_my_teacher_model(config["teacher_ckpt"], device)
-        # teacher.eval()
-        # logger.info(f"Teacher model loaded successfully from {config['teacher_ckpt']}")
+        tmodel = torch.load(config["teacher_ckpt"], map_location=device)["generator"]
+        bigvgan_cfg = OmegaConf.load("checkpoints/config.yaml").bigvgan
+        bigvgan = Generator(bigvgan_cfg, use_cuda_kernel=False)
+        vocoder_dict = torch.load(config["teacher_ckpt"], map_location="cpu")
+        for key in list(vocoder_dict["generator"])[:5]:
+          print(key)
+        bigvgan.load_state_dict(vocoder_dict["generator"])
+        #下面这句来自qwen
+        bigvgan.requires_grad_(False)
+        bigvgan = bigvgan.to("cpu")
+        
+        teacher = bigvgan.eval()
+        logger.info(f"Teacher model loaded successfully from {config['teacher_ckpt']}")
         pass
     except Exception as e:
         logger.error(f"Failed to load teacher model: {e}. Using dummy.")
@@ -157,11 +195,11 @@ student = Generator44kHzWithSpeaker(
 ).to(device)
 
 # Discriminator
-discriminator_hparams_obj = HParams(**config["discriminator_hparams"])
+discriminator_hparams_obj = AttrDict(config["discriminator_hparams"])
 discriminator = BigVGANDiscriminatorWrapper(discriminator_hparams_obj).to(device)
 
 # Optimizers
-optim_g = torch.optim.AdamW(student.parameters(), lr=config["lr_g"], betas=config.get("adam_betas_g", (0.8, 0.99)))
+# optim_g = torch.optim.AdamW(student.parameters(), lr=config["lr_g"], betas=config.get("adam_betas_g", (0.8, 0.99)))
 optim_d = torch.optim.AdamW(discriminator.parameters(), lr=config["lr_d"], betas=config.get("adam_betas_d", (0.8, 0.99)))
 
 # Load Checkpoints
@@ -170,8 +208,10 @@ global_step = 0
 if os.path.exists(config["student_ckpt"]):
     try:
         ckpt_g = torch.load(config["student_ckpt"], map_location=device)
-        student.load_state_dict(ckpt_g['model_state_dict'])
-        optim_g.load_state_dict(ckpt_g['optimizer_state_dict'])
+        
+        # student.load_state_dict(ckpt_g['generator'], strict=False)
+        student.load_state_dict(add_prefix_to_state_dict(ckpt_g['generator'],"bigvgan."), strict=False)
+        # optim_g.load_state_dict(ckpt_g['optim_g'], strict=False)
         start_epoch = ckpt_g.get('epoch', 0)
         global_step = ckpt_g.get('step', 0)
         logger.info(f"Loaded student G checkpoint from epoch {start_epoch}, step {global_step}")
@@ -180,8 +220,10 @@ if os.path.exists(config["student_ckpt"]):
 if os.path.exists(config["discriminator_ckpt"]):
     try:
         ckpt_d = torch.load(config["discriminator_ckpt"], map_location=device)
-        discriminator.load_state_dict(ckpt_d['model_state_dict'])
-        optim_d.load_state_dict(ckpt_d['optimizer_state_dict'])
+        for key in list(ckpt_d)[:50]:
+          print(key)
+        discriminator.load_state_dict(ckpt_d['mpd'])
+        optim_d.load_state_dict(ckpt_d['optim_d'])
         logger.info(f"Loaded discriminator D checkpoint.")
     except Exception as e:
         logger.warning(f"Could not load discriminator D checkpoint: {e}. Starting from scratch.")
@@ -228,7 +270,7 @@ for epoch in range(start_epoch, config["epochs"]):
 
         # --- Generator Training ---
         student.train()
-        optim_g.zero_grad()
+        # optim_g.zero_grad()
         y_hat_44k = student(mel_for_student, d_vector)
 
         y_hat_24k_from_student = torchaudio.functional.resample(y_hat_44k.squeeze(1), orig_freq=config["sampling_rate"], new_freq=config["sampling_rate_teacher"]).unsqueeze(1)
@@ -250,7 +292,7 @@ for epoch in range(start_epoch, config["epochs"]):
                   lw["stft_sc"]*loss_stft_sc_student + lw["stft_mag"]*loss_stft_mag_student +
                   lw["adv_g"]*loss_g_adv + lw["fm"]*loss_fm)
         loss_g.backward()
-        optim_g.step()
+        # optim_g.step()
 
         # --- Discriminator Training ---
         optim_d.zero_grad()
@@ -264,20 +306,24 @@ for epoch in range(start_epoch, config["epochs"]):
             logger.info(log_msg)
 
         if global_step > 0 and global_step % config["save_interval"] == 0:
-            student_ckpt_path = os.path.join(config["out_dir"], f"student_step_{global_step}.pth")
-            discriminator_ckpt_path = os.path.join(config["out_dir"], f"discriminator_step_{global_step}.pth")
-            torch.save({'epoch': epoch, 'step': global_step, 'model_state_dict': student.state_dict(), 'optimizer_state_dict': optim_g.state_dict()}, student_ckpt_path)
-            torch.save({'epoch': epoch, 'step': global_step, 'model_state_dict': discriminator.state_dict(), 'optimizer_state_dict': optim_d.state_dict()}, discriminator_ckpt_path)
+            student_ckpt_path = os.path.join(config["out_dir"], os.path.basename(f"student_step_{global_step}.pth"))
+            discriminator_ckpt_path = os.path.join(config["out_dir"], os.path.basename(f"discriminator_step_{global_step}.pth"))
+            # torch.save({'epoch': epoch, 'step': global_step, 'generator': student.state_dict(), 'optimizer_state_dict': optim_g.state_dict()}, student_ckpt_path)
+            torch.save({'epoch': epoch, 'step': global_step, 'generator': student.state_dict()}, student_ckpt_path)
+            torch.save({'epoch': epoch, 'step': global_step, 'discriminator': discriminator.state_dict(), 'optimizer_state_dict': optim_d.state_dict()}, discriminator_ckpt_path)
             logger.info(f"Saved step checkpoints at step {global_step}")
 
         global_step += 1
     logger.info(f"Epoch {epoch} completed.")
 
 logger.info("Training finished.")
-final_student_ckpt_path = config["student_ckpt"]
-final_discriminator_ckpt_path = config["discriminator_ckpt"]
-torch.save({'epoch': config["epochs"]-1, 'step': global_step, 'model_state_dict': student.state_dict(), 'optimizer_state_dict': optim_g.state_dict()}, final_student_ckpt_path)
-torch.save({'epoch': config["epochs"]-1, 'step': global_step, 'model_state_dict': discriminator.state_dict(), 'optimizer_state_dict': optim_d.state_dict()}, final_discriminator_ckpt_path)
+final_student_ckpt_path = os.path.join(config["out_dir"], os.path.basename(config["student_ckpt"]))
+final_discriminator_ckpt_path = os.path.join(config["out_dir"], os.path.basename(config["discriminator_ckpt"]))
+for key in list(student.state_dict())[:5]:
+  print(key)
+# torch.save({'epoch': config["epochs"]-1, 'step': global_step, 'generator': student.state_dict(), 'optimizer_state_dict': optim_g.state_dict()}, final_student_ckpt_path)
+torch.save({'epoch': config["epochs"]-1, 'step': global_step, 'generator': student.state_dict()}, final_student_ckpt_path)
+torch.save({'epoch': config["epochs"]-1, 'step': global_step, 'discriminator': discriminator.state_dict(), 'optimizer_state_dict': optim_d.state_dict()}, final_discriminator_ckpt_path)
 logger.info(f"Saved final models: {final_student_ckpt_path}, {final_discriminator_ckpt_path}")
 
 # Save final model weights only for inference (optional)
