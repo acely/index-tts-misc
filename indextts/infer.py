@@ -298,7 +298,7 @@ class IndexTTS:
         start_time = time.perf_counter()
 
         # 如果参考音频改变了，才需要重新生成 cond_mel, 提升速度
-        if self.cache_audio_prompt != audio_prompt:
+        if self.cache_cond_mel is None or self.cache_audio_prompt != audio_prompt:
             original_audio, original_sr = torchaudio.load(audio_prompt)
             # Process for 24kHz cond_mel
             audio_24k = torch.mean(original_audio, dim=0, keepdim=True)
@@ -528,7 +528,7 @@ class IndexTTS:
         start_time = time.perf_counter()
 
         # 如果参考音频改变了，才需要重新生成 cond_mel, 提升速度
-        if self.cache_audio_prompt != audio_prompt:
+        if self.cache_cond_mel is None or self.cache_audio_prompt != audio_prompt:
             original_audio, original_sr = torchaudio.load(audio_prompt)
             # Process for 24kHz cond_mel
             audio_24k = torch.mean(original_audio, dim=0, keepdim=True)
