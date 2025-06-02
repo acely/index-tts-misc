@@ -14,11 +14,11 @@ import torchaudio
 from torch.utils.data import DataLoader
 from torch.nn.utils import weight_norm, remove_weight_norm
 
-from models.generator import Generator44kHzWithSpeaker  # 修改版 Generator（包含音色嵌入）
+from indextts.distill-utils import Generator44kHzWithSpeaker  # 修改版 Generator（包含音色嵌入）
 from models.discriminator import DiscriminatorMultiRes
 from utils.audio import MelSpectrogramLoss, STFTLoss
 from utils.vocoder import PQMF
-from utils.dataset import AudioMelDataset  # 自定义数据集类
+from indextts.distill-utils import AudioMelDataset  # 自定义数据集类
 from utils.logger import setup_logger
 
 # 配置参数（建议移至配置文件）
