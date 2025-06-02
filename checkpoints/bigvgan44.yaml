@@ -107,3 +107,4 @@ resolutions:
     - 240
 # indextts
 mel_type: pytorch
+bigvgan_checkpoint: checkpoints_distill/bigvgan_generator-44k.pth
