@@ -35,8 +35,8 @@ config = {
     "log_interval": 100,
     "save_interval": 1000,
     "out_dir": "checkpoints_distill",
-    "teacher_ckpt": "bigvgan_teacher_24k.pth",
-    "student_ckpt": "bigvgan_student_init.pth",
+    "teacher_ckpt": "bigvgan_generator.pth",
+    "student_ckpt": "bigvgan_generator-44k.pth",
     "teacher_mel_hop": 256,
     "student_mel_hop": 512,
     "loss_weights": {
