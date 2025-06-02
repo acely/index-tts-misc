@@ -109,5 +109,4 @@ bigvgan:
 
 dvae_checkpoint: dvae.pth
 gpt_checkpoint: gpt.pth
-bigvgan_checkpoint: bigvgan_generator.pth
 version: 1.5
