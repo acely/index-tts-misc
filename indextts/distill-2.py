@@ -14,12 +14,15 @@ import torchaudio
 from torch.utils.data import DataLoader
 from torch.nn.utils import weight_norm, remove_weight_norm
 
-from indextts.distill-utils import Generator44kHzWithSpeaker  # 修改版 Generator（包含音色嵌入）
+from indextts.distill_utils import Generator44kHzWithSpeaker, AudioMelDataset # Combined and corrected import
 from models.discriminator import DiscriminatorMultiRes
 from indextts.custom_audio_utils import MelSpectrogramLoss, STFTLoss
 from utils.vocoder import PQMF
-from indextts.distill-utils import AudioMelDataset  # 自定义数据集类
-from utils.logger import setup_logger
+# AudioMelDataset also imported above from indextts.distill_utils
+import logging
+
+# Configure standard logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[logging.StreamHandler()])
 
 # 配置参数（建议移至配置文件）
 config = {
@@ -71,7 +74,7 @@ config = {
     }
 }
 
-logger = setup_logger("distill", config["out_dir"])
+# logger = setup_logger("distill", config["out_dir"]) # Removed custom logger
 
 torch.manual_seed(1234)
 torch.backends.cudnn.benchmark = True
@@ -122,7 +125,7 @@ if hasattr(torch, stft_window_fn_str.split('.')[-1]): # Simplistic check
     stft_window_constructor = getattr(torch, stft_window_fn_str.split('.')[-1])
 else:
     stft_window_constructor = torch.hann_window # Default
-    logger.warning(f"STFT window function {stft_window_fn_str} not found. Using torch.hann_window.")
+    logging.warning(f"STFT window function {stft_window_fn_str} not found. Using torch.hann_window.")
 
 stft_loss_fn = STFTLoss(
     n_fft=config["student_n_fft"],
@@ -223,7 +226,7 @@ for epoch in range(config["epochs"]):
 
         # ==== Logging ====
         if step % config["log_interval"] == 0:
-            logger.info(f"Step {step}, G_loss: {loss_g.item():.3f}, D_loss: {loss_d.item():.3f}")
+            logging.info(f"Step {step}, G_loss: {loss_g.item():.3f}, D_loss: {loss_d.item():.3f}")
 
         if step % config["save_interval"] == 0:
             ckpt_path = os.path.join(config["out_dir"], f"student_{step}.pth")
