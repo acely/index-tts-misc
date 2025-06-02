@@ -111,8 +111,10 @@ class IndexTTS:
                 )
                 self.use_cuda_kernel = False
         self.bigvgan = Generator(self.bigvgan_cfg_override, use_cuda_kernel=self.use_cuda_kernel)
-        self.bigvgan_path = os.path.join(self.model_dir, self.cfg.bigvgan_checkpoint)
+        self.bigvgan_path = self.bigvgan_cfg_override.bigvgan_checkpoint
         vocoder_dict = torch.load(self.bigvgan_path, map_location="cpu")
+        for key in list(vocoder_dict["generator"])[:5]:
+          print(key)
         self.bigvgan.load_state_dict(vocoder_dict["generator"])
         self.bigvgan = self.bigvgan.to(self.device)
         # remove weight norm on eval mode
