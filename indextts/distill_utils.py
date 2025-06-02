@@ -5,58 +5,51 @@ import torchaudio
 import random
 import os
 from torch.utils.data import Dataset
-import numpy as np # For saving .npy if needed, though .pt is fine
+import numpy as np
 
-from indextts.BigVGAN.models import BigVGAN as BigVGANGenerator
-from indextts.BigVGAN.ECAPA_TDNN import ECAPA_TDNN # Import ECAPA_TDNN
+from indextts.BigVGAN.models import BigVGAN
+from indextts.BigVGAN.ECAPA_TDNN import ECAPA_TDNN
 
 # ==== Helper HParams Class ====
-# (HParams class remains unchanged)
 class HParams:
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
-        if 'use_cuda_kernel' not in kwargs:
-            self.use_cuda_kernel = False
-        if 'snake_logscale' not in kwargs:
-            self.snake_logscale = True
-        if 'feat_upsample' not in kwargs:
-            self.feat_upsample = False
-        if 'cond_d_vector_in_each_upsampling_layer' not in kwargs:
-            self.cond_d_vector_in_each_upsampling_layer = True
-
     def get(self, key, default=None):
         return getattr(self, key, default)
 
 # ==== 1. Generator44kHzWithSpeaker 定义 ====
-# (Generator44kHzWithSpeaker class remains unchanged)
 class Generator44kHzWithSpeaker(nn.Module):
-    def __init__(self, mel_dim=128, speaker_embed_dim=512):
+    def __init__(self, mel_dim_input, speaker_embed_dim, bigvgan_config_dict):
         super().__init__()
+        hparams_values = {
+            "upsample_rates": bigvgan_config_dict.get("upsample_rates", [8,8,2,2,2]),
+            "upsample_kernel_sizes": bigvgan_config_dict.get("upsample_kernel_sizes", [16,16,4,4,4]),
+            "upsample_initial_channel": bigvgan_config_dict.get("upsample_initial_channel", 512),
+            "resblock_kernel_sizes": bigvgan_config_dict.get("resblock_kernel_sizes", [3,7,11]),
+            "resblock_dilation_sizes": bigvgan_config_dict.get("resblock_dilation_sizes", [[1,3,5],[1,3,5],[1,3,5]]),
+            "gpt_dim": mel_dim_input,
+            "speaker_embedding_dim": speaker_embed_dim,
+            "num_mels": mel_dim_input,
+            "activation": bigvgan_config_dict.get("activation", "snake"),
+            "resblock": bigvgan_config_dict.get("resblock", "1"),
+            "feat_upsample": bigvgan_config_dict.get("feat_upsample", False),
+            "cond_d_vector_in_each_upsampling_layer": bigvgan_config_dict.get("cond_d_vector_in_each_upsampling_layer", True),
+            "use_cuda_kernel": bigvgan_config_dict.get("use_cuda_kernel", False),
+            "snake_logscale": bigvgan_config_dict.get("snake_logscale", True)
+        }
+        internal_hparams = HParams(**hparams_values)
+        self.speaker_embed_dim = speaker_embed_dim
+        self.bigvgan = BigVGAN(h=internal_hparams)
 
-        self.h_bigvgan = HParams(
-            upsample_rates=[8,8,2,2,2],
-            upsample_kernel_sizes=[16,16,4,4,4],
-            upsample_initial_channel=512,
-            resblock_kernel_sizes=[3,7,11],
-            resblock_dilation_sizes=[[1,3,5],[1,3,5],[1,3,5]],
-            gpt_dim=mel_dim,
-            speaker_embedding_dim=speaker_embed_dim,
-            num_mels=128,
-            activation="snake",
-            resblock="1",
-        )
-        self.generator = BigVGANGenerator(h=self.h_bigvgan)
-
-    def forward(self, mel, d_vector):
-        wav_out, _ = self.generator(x=mel, d_vector=d_vector.unsqueeze(-1))
-        return wav_out
+    def forward(self, mel_spec, d_vector):
+        output_waveform, _ = self.bigvgan(x=mel_spec, d_vector=d_vector)
+        return output_waveform
 
 # ==== 2. AudioMelDataset 定义 ====
 class AudioMelDataset(Dataset):
     def __init__(self,
                  wav_dir,
-                 # mel_dir is not used for student mels if generated on the fly
                  segment_size,
                  # Student mel params
                  student_sampling_rate,
@@ -66,26 +59,27 @@ class AudioMelDataset(Dataset):
                  student_n_mels,
                  # Speaker embedding params
                  speaker_embed_dim,
-                 speaker_embed_dir, # Directory for pre-computed speaker embeddings
-                 ecapa_model_path,  # Path to pre-trained ECAPA_TDNN model
-                 ecapa_input_mels,
-                 ecapa_sampling_rate,
-                 ecapa_n_fft,
-                 ecapa_hop_length,
-                 ecapa_win_length,
-                 device='cpu' # Device for ECAPA model if used on-the-fly
+                 speaker_embed_dir=None, # Default to None
+                 ecapa_model_path=None,  # Default to None
+                 ecapa_input_mels=80,    # Default as per subtask
+                 ecapa_sampling_rate=24000,# Default as per subtask
+                 ecapa_n_fft=1024,       # Default as per subtask
+                 ecapa_hop_length=256,   # Default as per subtask
+                 ecapa_win_length=1024,  # Default as per subtask
+                 ecapa_mel_fmin=0.0,     # Default as per subtask
+                 ecapa_mel_fmax=None,    # Default as per subtask
+                 device='cpu',
+                 **kwargs # To catch any other student_mel_ params if passed by old config
                 ):
         self.wav_dir = wav_dir
         self.segment_size = segment_size
 
-        # Student mel params
         self.student_sampling_rate = student_sampling_rate
         self.student_hop_length = student_hop_length
         self.student_n_fft = student_n_fft
         self.student_win_length = student_win_length if student_win_length is not None else student_n_fft
         self.student_n_mels = student_n_mels
 
-        # Speaker embedding params
         self.speaker_embed_dim = speaker_embed_dim
         self.speaker_embed_dir = speaker_embed_dir
         self.ecapa_model_path = ecapa_model_path
@@ -94,11 +88,12 @@ class AudioMelDataset(Dataset):
         self.ecapa_n_fft = ecapa_n_fft
         self.ecapa_hop_length = ecapa_hop_length
         self.ecapa_win_length = ecapa_win_length if ecapa_win_length is not None else ecapa_n_fft
+        self.ecapa_mel_fmin = ecapa_mel_fmin
+        self.ecapa_mel_fmax = ecapa_mel_fmax
         self.device = device
 
         self.wav_files = sorted([f for f in os.listdir(wav_dir) if f.endswith(".wav")])
 
-        # Mel transform for student input
         self.student_mel_transform = torchaudio.transforms.MelSpectrogram(
             sample_rate=self.student_sampling_rate,
             n_fft=self.student_n_fft,
@@ -107,28 +102,30 @@ class AudioMelDataset(Dataset):
             n_mels=self.student_n_mels
         ).to(self.device)
 
-        # ECAPA_TDNN for speaker embeddings
         self.speaker_encoder = ECAPA_TDNN(input_size=self.ecapa_input_mels, lin_neurons=self.speaker_embed_dim).to(self.device)
         if self.ecapa_model_path and os.path.exists(self.ecapa_model_path):
             try:
                 self.speaker_encoder.load_state_dict(torch.load(self.ecapa_model_path, map_location=self.device))
-                print(f"Loaded pre-trained ECAPA_TDNN from {self.ecapa_model_path}")
+                print(f"INFO: Loaded pre-trained ECAPA_TDNN from {self.ecapa_model_path}")
             except Exception as e:
-                print(f"Error loading ECAPA_TDNN weights from {self.ecapa_model_path}: {e}. Using random init.")
+                print(f"WARN: Error loading ECAPA_TDNN weights from {self.ecapa_model_path}: {e}. Using random init.")
         else:
-            print("ECAPA_TDNN model path not found or not specified. Using random init for speaker encoder.")
+            if self.ecapa_model_path: # Only warn if a path was given but not found
+                 print(f"WARN: ECAPA_TDNN model path {self.ecapa_model_path} not found. Using random init for speaker encoder.")
+            else:
+                 print("INFO: No ECAPA_TDNN model path specified. Using random init for speaker encoder.")
         self.speaker_encoder.eval()
 
-        # Mel transform for ECAPA input
         self.ecapa_mel_transform = torchaudio.transforms.MelSpectrogram(
             sample_rate=self.ecapa_sampling_rate,
             n_fft=self.ecapa_n_fft,
             hop_length=self.ecapa_hop_length,
             win_length=self.ecapa_win_length,
-            n_mels=self.ecapa_input_mels
+            n_mels=self.ecapa_input_mels,
+            f_min=self.ecapa_mel_fmin,
+            f_max=self.ecapa_mel_fmax
         ).to(self.device)
 
-        # Mock speaker embedding generator (fallback)
         self.mock_embed_generator = torch.nn.Linear(1, speaker_embed_dim).to(self.device)
 
 
@@ -143,67 +140,73 @@ class AudioMelDataset(Dataset):
 
         # Priority 1: Load pre-computed speaker embedding
         if self.speaker_embed_dir:
-            embed_filename = wav_filename.replace(".wav", ".pt") # Or .speaker.pt, .npy etc.
-            embed_path = os.path.join(self.speaker_embed_dir, embed_filename)
+            # Use splitext for robustness with filenames containing dots
+            base_filename = os.path.splitext(wav_filename)[0]
+            embed_path = os.path.join(self.speaker_embed_dir, f"{base_filename}.pt")
             if os.path.exists(embed_path):
                 try:
-                    d_vector = torch.load(embed_path, map_location=torch.device('cpu')) # Load to CPU first
-                    if d_vector.shape[0] != self.speaker_embed_dim:
-                        print(f"Warning: Loaded speaker embedding {embed_path} has incorrect dimension {d_vector.shape}. Expected {self.speaker_embed_dim}. Ignoring.")
+                    d_vector = torch.load(embed_path, map_location=torch.device('cpu'))
+                    if not isinstance(d_vector, torch.Tensor) or d_vector.ndim != 1 or d_vector.shape[0] != self.speaker_embed_dim:
+                        print(f"WARN: Loaded speaker embedding {embed_path} has incorrect dimension or type. Expected ({self.speaker_embed_dim},). Got {d_vector.shape if isinstance(d_vector, torch.Tensor) else type(d_vector)}. Ignoring.")
                         d_vector = None
                 except Exception as e:
-                    print(f"Error loading speaker embedding {embed_path}: {e}")
+                    print(f"WARN: Error loading speaker embedding {embed_path}: {e}")
                     d_vector = None
 
-        # Load audio
+        # Load audio (original_audio_tensor)
         try:
-            audio_full, sr = torchaudio.load(wav_path)
+            original_audio_tensor, current_sr = torchaudio.load(wav_path)
         except Exception as e:
-            print(f"Error loading wav file {wav_path}: {e}")
-            return self.__getitem__((idx + 1) % len(self.wav_files)) # Fallback
+            print(f"ERROR: Error loading wav file {wav_path}: {e}")
+            return self.__getitem__((idx + 1) % len(self.wav_files))
 
-        # Resample to student_sampling_rate for student mels and main audio segment
-        if sr != self.student_sampling_rate:
-            audio_full = torchaudio.functional.resample(audio_full, sr, self.student_sampling_rate)
-        if audio_full.shape[0] > 1: # Ensure mono
-            audio_full = torch.mean(audio_full, dim=0)
-        audio_full = audio_full.squeeze()
+        # Ensure audio is on device for transforms
+        original_audio_tensor_on_device = original_audio_tensor.to(self.device)
+        if original_audio_tensor_on_device.shape[0] > 1: # Ensure mono for ECAPA and student processing
+            original_audio_tensor_on_device = torch.mean(original_audio_tensor_on_device, dim=0, keepdim=True)
 
-        # Segment or pad audio for student processing
-        if audio_full.size(0) >= self.segment_size:
-            start = random.randint(0, audio_full.size(0) - self.segment_size)
-            audio_segment_student = audio_full[start:start+self.segment_size]
+        # Prepare audio for student (segmentation, resampling if needed)
+        audio_for_student = original_audio_tensor_on_device
+        if current_sr != self.student_sampling_rate:
+            audio_for_student = torchaudio.functional.resample(audio_for_student, current_sr, self.student_sampling_rate)
+
+        audio_segment_student = audio_for_student.squeeze(0) # Remove channel dim for 1D operations
+        if audio_segment_student.size(0) >= self.segment_size:
+            start = random.randint(0, audio_segment_student.size(0) - self.segment_size)
+            audio_segment_student = audio_segment_student[start:start+self.segment_size]
         else:
-            audio_segment_student = F.pad(audio_full, (0, self.segment_size - audio_full.size(0)), "constant")
+            audio_segment_student = F.pad(audio_segment_student, (0, self.segment_size - audio_segment_student.size(0)), "constant")
 
-        # Generate mel spectrogram for student input
-        mel_student = self.student_mel_transform(audio_segment_student.unsqueeze(0).to(self.device)).squeeze(0)
+        mel_student = self.student_mel_transform(audio_segment_student.unsqueeze(0)).squeeze(0) # Add batch dim for transform, then remove
 
         # Priority 2: Generate speaker embedding on-the-fly if not loaded
-        if d_vector is None:
+        if d_vector is None and self.speaker_encoder:
             try:
-                # Prepare audio for ECAPA: use the *full* audio for better embedding, or segment if needed
-                # Here, using the full audio resampled to ECAPA's expected sample rate
-                audio_for_ecapa = audio_full # Already at student_sampling_rate
-                if self.student_sampling_rate != self.ecapa_sampling_rate:
-                    audio_for_ecapa = torchaudio.functional.resample(audio_for_ecapa, self.student_sampling_rate, self.ecapa_sampling_rate)
+                audio_for_ecapa = original_audio_tensor_on_device # Start with mono audio on device
+                if current_sr != self.ecapa_sampling_rate:
+                    # Resample expects (..., time), so if (1, time), it's fine.
+                    audio_for_ecapa = torchaudio.functional.resample(audio_for_ecapa, current_sr, self.ecapa_sampling_rate)
 
-                # Ensure audio_for_ecapa is on the correct device for transformation
-                mel_for_ecapa = self.ecapa_mel_transform(audio_for_ecapa.unsqueeze(0).to(self.device)) # (1, n_mels_ecapa, time)
+                min_len_for_ecapa_mel = self.ecapa_n_fft
+                if audio_for_ecapa.shape[-1] < min_len_for_ecapa_mel: # input to STFT must be at least n_fft
+                     audio_for_ecapa = F.pad(audio_for_ecapa, (0, min_len_for_ecapa_mel - audio_for_ecapa.shape[-1]), "reflect")
 
-                with torch.no_grad(): # Ensure no gradients for speaker encoder
-                    d_vector = self.speaker_encoder(mel_for_ecapa).squeeze(0).squeeze(-1).cpu() # (speaker_embed_dim)
+                mel_for_ecapa = self.ecapa_mel_transform(audio_for_ecapa) # Expects (B, T) or (T) -> (B, n_mels, time)
+
+                with torch.no_grad():
+                    d_vector = self.speaker_encoder(mel_for_ecapa).squeeze(0).squeeze(-1).cpu() # ECAPA outputs (B, C, 1) -> (C)
             except Exception as e:
-                print(f"Error generating speaker embedding for {wav_filename} with ECAPA_TDNN: {e}")
+                print(f"WARN: ECAPA_TDNN failed to generate speaker embedding for {wav_path}: {e}")
                 d_vector = None
 
         # Priority 3: Mock embedding (fallback)
         if d_vector is None:
-            print(f"Warning: Using mock speaker embedding for {wav_filename}.")
-            d_vector = self.mock_embed_generator(torch.ones(1).to(self.device)).squeeze(0).detach().cpu()
+            print(f"WARN: Using mock speaker embedding for {wav_path}")
+            with torch.no_grad():
+                d_vector = self.mock_embed_generator(torch.ones(1, device=self.device)).squeeze(0).cpu()
 
         return {
             "mel": mel_student.cpu(),
             "audio": audio_segment_student.cpu(),
-            "d_vector": d_vector.cpu() # Ensure all outputs are on CPU
+            "d_vector": d_vector.cpu() # Ensure (speaker_embed_dim,)
         }
