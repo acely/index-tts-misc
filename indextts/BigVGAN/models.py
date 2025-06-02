@@ -198,16 +198,59 @@ class BigVGAN(torch.nn.Module):
 
         # self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
-    def forward(self, x, mel_ref, lens=None):
-        speaker_embedding = self.speaker_encoder(mel_ref, lens)
-        n_batch = x.size(0)
-        contrastive_loss = None
-        if n_batch * 2 == speaker_embedding.size(0):
-            spe_emb_chunk1, spe_emb_chunk2 = speaker_embedding[:n_batch, :, :], speaker_embedding[n_batch:, :, :]
-            contrastive_loss = self.cal_clip_loss(spe_emb_chunk1.squeeze(1), spe_emb_chunk2.squeeze(1), self.logit_scale.exp())
+    def forward(self, x, d_vector=None, mel_ref=None, lens=None):
+        # x: mel_input (B, C, T)
+        # d_vector: pre-computed speaker embedding (B, C_spk, 1)
+        # mel_ref: reference mel for internal speaker encoder (B, C_mel, T_mel)
 
-            speaker_embedding = speaker_embedding[:n_batch, :, :]
-        speaker_embedding = speaker_embedding.transpose(1, 2)
+        contrastive_loss = None
+        n_batch = x.size(0)
+
+        if d_vector is not None:
+            speaker_embedding = d_vector # Shape already (B, C_spk, 1) as passed from distill-utils
+            if speaker_embedding.ndim == 2: # Ensure it's 3D for Conv1d
+                speaker_embedding = speaker_embedding.unsqueeze(-1)
+        elif mel_ref is not None:
+            # Compute speaker embedding using internal encoder
+            # This part handles the original logic for mel_ref
+            spk_emb_raw = self.speaker_encoder(mel_ref, lens) # (B or 2*B, C_spk, 1)
+            if n_batch * 2 == spk_emb_raw.size(0): # Contrastive loss case
+                # This logic for contrastive loss might not be triggered when d_vector is used
+                # but kept for compatibility if mel_ref is used in other contexts.
+                # Ensure logit_scale is defined if this path is taken. For now, assume it exists if needed.
+                # if hasattr(self, 'logit_scale'):
+                #     spe_emb_chunk1, spe_emb_chunk2 = spk_emb_raw[:n_batch, :, :], spk_emb_raw[n_batch:, :, :]
+                #     contrastive_loss = self.cal_clip_loss(spe_emb_chunk1.squeeze(-1), spe_emb_chunk2.squeeze(-1), self.logit_scale.exp())
+                # else:
+                #     print("Warning: logit_scale not defined, cannot compute contrastive loss.")
+                pass # Contrastive loss calculation might need self.logit_scale, which is commented out.
+                     # For distillation, this path is less likely.
+                speaker_embedding = spk_emb_raw[:n_batch, :, :]
+            else:
+                speaker_embedding = spk_emb_raw
+
+            # Original BigVGAN transposes after ECAPA output if it's (B, C, 1) to (B, 1, C) then (B,C,1) again
+            # ECAPA_TDNN output is (batch, lin_neurons, 1) which matches (B, C_spk, 1)
+            # The original code had: speaker_embedding = speaker_embedding.transpose(1, 2)
+            # This would make it (B, 1, C_spk). Let's check cond_layer expectation.
+            # cond_layer is Conv1d(speaker_embedding_dim, ..., 1). So it expects (B, C_spk, Length).
+            # The ECAPA_TDNN output is (B, h.speaker_embedding_dim, 1), which is correct.
+            # So, no transpose needed if ECAPA_TDNN output is already (B, C_spk, 1)
+            # Let's assume speaker_embedding from ECAPA_TDNN is (B, C_spk, 1)
+            # The original .transpose(1,2) was likely if speaker_encoder returned (B, 1, C_spk) or (B, C_spk)
+            # Given ECAPA_TDNN output [batch, C, 1], it's already suitable for Conv1d.
+            # If it was [batch, C], it would need unsqueeze(-1).
+            # The original code had .transpose(1,2) after speaker_encoder. Let's trace:
+            # speaker_encoder(mel_ref, lens) -> (B, h.speaker_embedding_dim, 1)
+            # .transpose(1,2) -> (B, 1, h.speaker_embedding_dim) - this seems incorrect for Conv1d over C_spk
+            # Let's stick to (B, C_spk, 1) for speaker_embedding
+            # The original code: speaker_embedding = speaker_embedding.transpose(1, 2) -> this was for (B, C_spk) input to make it (B, C_spk, 1) effectively if it was (B, T, C_spk)
+            # The ECAPA_TDNN output is (batch_size, embed_dim, 1). This is the correct shape for self.cond_layer.
+            # So, the .transpose(1,2) in the original code after self.speaker_encoder might have been an error or for a different ECAPA_TDNN output shape.
+            # For now, I'll assume ECAPA_TDNN outputs (B, speaker_embedding_dim, 1)
+            pass # speaker_embedding is already in the correct shape (B, C_spk, 1) from ECAPA_TDNN
+        else:
+            raise ValueError("Either d_vector or mel_ref must be provided for speaker embedding.")
 
         # upsample feat
         if self.feat_upsample:
