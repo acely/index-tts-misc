@@ -6,17 +6,11 @@ import random
 import os
 from torch.utils.data import Dataset
 import numpy as np
+from attrdict import AttrDict
 
 from indextts.BigVGAN.models import BigVGAN
 from indextts.BigVGAN.ECAPA_TDNN import ECAPA_TDNN
 
-# ==== Helper HParams Class ====
-class HParams:
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-    def get(self, key, default=None):
-        return getattr(self, key, default)
 
 # ==== 1. Generator44kHzWithSpeaker 定义 ====
 class Generator44kHzWithSpeaker(nn.Module):
@@ -38,7 +32,7 @@ class Generator44kHzWithSpeaker(nn.Module):
             "use_cuda_kernel": bigvgan_config_dict.get("use_cuda_kernel", False),
             "snake_logscale": bigvgan_config_dict.get("snake_logscale", True)
         }
-        internal_hparams = HParams(**hparams_values)
+        internal_hparams = AttrDict(hparams_values)
         self.speaker_embed_dim = speaker_embed_dim
         self.bigvgan = BigVGAN(h=internal_hparams)
 
